@@ -1,10 +1,12 @@
 package org.example;
 
+import io.smallrye.mutiny.Uni;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -36,18 +38,23 @@ public class WorkResource {
           "Обрабатывает запрос с задержкой. При превышении лимита запросов возвращает 429")
   @APIResponse(responseCode = "429", description = "Превышен лимит запросов (Too Many Requests)")
   @APIResponse(responseCode = "200", description = "Успешное выполнение задачи ")
-  public Response doWork() {
+  public Uni<Response> doWork() {
     if (syncList.size() > this.apiLimit) {
-      return Response.status(429).entity("Too many requests - rate limit exceeded\n").build();
+      return Uni.createFrom()
+          .item(Response.status(429).entity("Too many requests - rate limit exceeded\n").build());
     }
     syncList.add("0");
-    try {
-      Thread.sleep(timeout);
-    } catch (InterruptedException e) {
-      throw new RuntimeException(e);
-    }
-    syncList.removeFirst();
-    return Response.ok("OK\n").build();
+    return Uni.createFrom()
+        .item("OK\n")
+        .onItem()
+        .delayIt()
+        .by(Duration.ofMillis(timeout))
+        .onItem()
+        .transform(
+            result -> {
+              syncList.removeFirst();
+              return Response.ok(result).build();
+            });
   }
 
   @GET
@@ -56,7 +63,7 @@ public class WorkResource {
   @Operation(
       summary = "Получить статус",
       description = "Возвращает текущее количество активных запросов")
-  public Integer status() {
-    return syncList.size();
+  public Uni<Integer> status() {
+    return Uni.createFrom().item(syncList.size());
   }
 }

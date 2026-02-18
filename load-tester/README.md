@@ -11,7 +11,6 @@
 ```bash
 cd load-tester
 go mod download
-go mod tidy 
 ```
 
 ## Запуск

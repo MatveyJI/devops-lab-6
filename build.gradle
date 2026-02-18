@@ -18,7 +18,7 @@ java {
 
 dependencies {
     implementation enforcedPlatform("io.quarkus:quarkus-bom:3.32.0.CR1")
-    implementation 'io.quarkus:quarkus-resteasy'
+    implementation 'io.quarkus:quarkus-rest'
     implementation 'io.quarkus:quarkus-arc'
     implementation 'io.quarkus:quarkus-smallrye-openapi'
 
