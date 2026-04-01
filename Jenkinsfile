@@ -2,7 +2,11 @@ pipeline {
     agent { label 'docker' }
 
     environment {
-        REGISTRY = "registry.cicd-task.svc.cluster.local:443"
+        // Адрес для Docker (через ваш port-forward)
+        EXTERNAL_REGISTRY = "localhost:5000"
+        // Адрес для Kubernetes (внутри кластера)
+        INTERNAL_REGISTRY = "registry.cicd-task.svc.cluster.local:443"
+        
         APP_NAME = "work-app"
         LOAD_TEST_URL = "http://work.127.0.0.1.nip.io/work"
         TARGET_RPS = "220"
@@ -20,7 +24,6 @@ pipeline {
         stage('Build Artifact') {
             steps {
                 sh './gradlew build -x test'
-                // Проверка для отладки: посмотрим, что реально лежит в build
                 sh 'ls -R build/' 
             }
         }
@@ -28,7 +31,9 @@ pipeline {
         stage('Capture Previous Release') {
             steps {
                 script {
+                    // Пытаемся получить текущий образ из деплоймента
                     def currentImage = sh(
+                        returnStatus: false,
                         returnStdout: true,
                         script: "kubectl get deployment/${env.APP_NAME} -o jsonpath='{.spec.template.spec.containers[0].image}' || echo ''"
                     ).trim()
@@ -36,7 +41,8 @@ pipeline {
                     if (currentImage && currentImage != "" && currentImage != "null") {
                         env.PREV_IMAGE = currentImage
                     } else {
-                        env.PREV_IMAGE = "${env.REGISTRY}/${env.APP_NAME}:latest"
+                        // Фолбек на внутренний адрес, если деплоймента еще нет
+                        env.PREV_IMAGE = "${env.INTERNAL_REGISTRY}/${env.APP_NAME}:latest"
                     }
                     echo "PREV_IMAGE set to: ${env.PREV_IMAGE}"
                 }
@@ -46,22 +52,30 @@ pipeline {
         stage('Build & Push Image') {
             steps {
                 script {
-                    env.NEW_IMAGE = "${env.REGISTRY}/${env.APP_NAME}:${env.BUILD_NUMBER}"
-                    echo "Building: ${env.NEW_IMAGE}"
-                    sh "docker build -t ${env.NEW_IMAGE} ."
-                    sh "docker push ${env.NEW_IMAGE}"
+                    // Для сборки и пуша используем localhost
+                    env.BUILD_TAG = "${env.EXTERNAL_REGISTRY}/${env.APP_NAME}:${env.BUILD_NUMBER}"
+                    // Для деплоя в K8s используем внутренний DNS
+                    env.K8S_TAG = "${env.INTERNAL_REGISTRY}/${env.APP_NAME}:${env.BUILD_NUMBER}"
+                    
+                    echo "Building local tag: ${env.BUILD_TAG}"
+                    sh "docker build -t ${env.BUILD_TAG} ."
+                    
+                    echo "Pushing to registry via port-forward..."
+                    sh "docker push ${env.BUILD_TAG}"
+                    
+                    // Дополнительно тегируем внутренним именем, чтобы kubectl понимал, что деплоить
+                    sh "docker tag ${env.BUILD_TAG} ${env.K8S_TAG}"
                 }
             }
         }
 
         stage('Deploy to K8s') {
             steps {
-                sh "kubectl set image deployment/${env.APP_NAME} ${env.APP_NAME}=${env.NEW_IMAGE}"
+                // Указываем K8s использовать ВНУТРЕННИЙ адрес для скачивания образа
+                sh "kubectl set image deployment/${env.APP_NAME} ${env.APP_NAME}=${env.K8S_TAG}"
                 sh "kubectl rollout status deployment/${env.APP_NAME} --timeout=180s"
             }
         }
-
-        // ... остальные стадии (тесты и анализ) оставить как были
     }
 
     post {
