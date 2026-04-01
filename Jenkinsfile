@@ -32,15 +32,19 @@ pipeline {
         stage('Capture Previous Release') {
             steps {
                 script {
-                    env.PREV_IMAGE = sh(
+                    //птаемся получить текущий образ и если ошибка то возвращаем пустую строку, чтобы пайплайн не упал
+                    def currentImage = sh(
                         returnStdout: true,
-                        script: "kubectl get deployment/${APP_NAME} -o jsonpath=\"{.spec.template.spec.containers[?(@.name=='${APP_NAME}')].image}\""
+                        script: "kubectl get deployment/${APP_NAME} -o jsonpath='{.spec.template.spec.containers[0].image}' || echo ''"
                     ).trim()
 
-                    if (!env.PREV_IMAGE) {
-                        error('Не удалось определить предыдущий image для rollback')
+                    if (currentImage && currentImage != "") {
+                        env.PREV_IMAGE = currentImage
+                        echo "Captured previous image: ${env.PREV_IMAGE}"
+                    } else {
+                        env.PREV_IMAGE = "${REGISTRY}/${APP_NAME}:latest"
+                        echo "No previous image found. Using fallback: ${env.PREV_IMAGE}"
                     }
-                    echo "Captured previous image tag for rollback: ${env.PREV_IMAGE}"
                 }
             }
         }
