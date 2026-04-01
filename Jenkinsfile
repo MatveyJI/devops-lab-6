@@ -34,6 +34,7 @@ pipeline {
                         returnStdout: true
                     ).trim() : ""
                     env.PREV_IMAGE = currentImage
+                    echo "Captured PREV_IMAGE: ${env.PREV_IMAGE}"
                 }
             }
         }
@@ -63,22 +64,24 @@ pipeline {
         stage('Wait for Availability') {
             steps {
                 script {
-                    echo "Waiting for endpoint ${env.LOAD_TEST_URL} to return 200 OK..."
-                    // Улучшенный цикл: если через 12 попыток (1 мин) нет 200 OK, пайплайн упадет
+                    echo "Waiting for ${env.LOAD_TEST_URL}..."
+                    // Увеличено до 24 попыток (2 минуты) + вывод логов при ошибке
                     sh """
                         SUCCESS=0
-                        for i in {1..12}; do
-                          CODE=\$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 2 --retry 0 ${env.LOAD_TEST_URL} || echo "000")
+                        for i in {1..24}; do
+                          CODE=\$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 3 ${env.LOAD_TEST_URL} || echo "000")
                           if [ "\$CODE" == "200" ]; then
-                            echo "Endpoint is READY (HTTP 200)"
+                            echo "SUCCESS: Endpoint is up!"
                             SUCCESS=1
                             break
                           fi
-                          echo "Attempt \$i: Endpoint returned \$CODE. Retrying in 5s..."
+                          echo "Attempt \$i: HTTP \$CODE. Waiting 5s..."
                           sleep 5
                         done
                         if [ "\$SUCCESS" == "0" ]; then
-                          echo "ERROR: Endpoint did not become ready in time"
+                          echo "--- DEBUG INFO ---"
+                          kubectl get pods -n ${env.NAMESPACE}
+                          kubectl describe deployment ${env.APP_NAME} -n ${env.NAMESPACE}
                           exit 1
                         fi
                     """
@@ -89,10 +92,9 @@ pipeline {
         stage('Load Testing') {
             steps {
                 script {
-                    echo "Starting Warm-up..."
+                    echo "Running Warm-up..."
                     sh "LOAD_TEST_RUN_NAME=warmup ./scripts/run-load-test.sh"
-                    sleep 5
-                    echo "Starting Final Analysis..."
+                    echo "Running Final Test..."
                     sh "LOAD_TEST_RUN_NAME=final ./scripts/run-load-test.sh"
                 }
             }
@@ -101,19 +103,16 @@ pipeline {
         stage('Quality Gate & Rollback') {
             steps {
                 script {
-                    def metricsFile = "artifacts/load-tests/final.metrics"
-                    if (!fileExists(metricsFile)) {
-                        error "Metrics file not found!"
-                    }
-                    
-                    def props = readProperties file: metricsFile
-                    double actualRps = props['SUCCESS_RPS'] ? props['SUCCESS_RPS'].toDouble() : 0
-                    double successRate = props['SUCCESS_RATE'] ? props['SUCCESS_RATE'].toDouble() : 0
+                    def props = readProperties file: "artifacts/load-tests/final.metrics"
+                    double actualRps = props['SUCCESS_RPS']?.toDouble() ?: 0
+                    double successRate = props['SUCCESS_RATE']?.toDouble() ?: 0
                     
                     if (successRate < env.SUCCESS_THRESHOLD.toDouble() || actualRps < env.TARGET_RPS.toDouble()) {
-                        if (env.PREV_IMAGE) {
+                        echo "QUALITY GATE FAILED: RPS \$actualRps, Success \$successRate%"
+                        if (env.PREV_IMAGE && env.PREV_IMAGE != "") {
                             sh "kubectl set image deployment/${env.APP_NAME} ${env.APP_NAME}=${env.PREV_IMAGE} -n ${env.NAMESPACE}"
-                            error "Quality Gate failed. Rolled back to ${env.PREV_IMAGE}"
+                            sh "kubectl rollout status deployment/${env.APP_NAME} -n ${env.NAMESPACE}"
+                            error "Rollback executed to \${env.PREV_IMAGE}"
                         }
                     }
                 }
@@ -123,7 +122,7 @@ pipeline {
 
     post {
         always {
-            archiveArtifacts artifacts: 'artifacts/load-tests/*.log, artifacts/load-tests/*.metrics, build/reports/**', allowEmptyArchive: true
+            archiveArtifacts artifacts: 'artifacts/load-tests/*, build/reports/**', allowEmptyArchive: true
         }
     }
 }
