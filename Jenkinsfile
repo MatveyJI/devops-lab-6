@@ -52,7 +52,11 @@ pipeline {
         stage('Deploy & Configure K8s') {
             steps {
                 script {
-                    // Создаем/обновляем Service и Ingress, если их нет
+                    // Удаляем старый конфликтующий Ingress, если он есть в default или cicd-task
+                    sh "kubectl delete ingress work-app-ingress -n default --ignore-not-found"
+                    sh "kubectl delete ingress ${env.APP_NAME} -n ${env.NAMESPACE} --ignore-not-found"
+
+                    // Применяем манифесты
                     sh """
 cat <<EOF | kubectl apply -n ${env.NAMESPACE} -f -
 apiVersion: v1
@@ -71,9 +75,8 @@ apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
   name: ${env.APP_NAME}
-  annotations:
-    kubernetes.io/ingress.class: nginx
 spec:
+  ingressClassName: nginx
   rules:
   - host: work.127.0.0.1.nip.io
     http:
@@ -88,14 +91,7 @@ spec:
 EOF
                     """
                     
-                    // Обновляем образ в Deployment
                     sh "kubectl set image deployment/${env.APP_NAME} ${env.APP_NAME}=${env.FINAL_IMAGE} -n ${env.NAMESPACE}"
-                    
-                    sh """
-                        kubectl patch deployment ${env.APP_NAME} -n ${env.NAMESPACE} \
-                        -p '{"spec":{"template":{"spec":{"containers":[{"name":"${env.APP_NAME}","imagePullPolicy":"IfNotPresent"}]}}}}'
-                    """
-                    
                     sh "kubectl rollout status deployment/${env.APP_NAME} -n ${env.NAMESPACE} --timeout=180s"
                 }
             }
@@ -137,10 +133,12 @@ EOF
                     double rps = props['SUCCESS_RPS']?.toDouble() ?: 0
                     double rate = props['SUCCESS_RATE']?.toDouble() ?: 0
                     
+                    echo "Metrics: RPS \$rps, Success Rate \$rate%"
+
                     if (rate < env.SUCCESS_THRESHOLD.toDouble() || rps < env.TARGET_RPS.toDouble()) {
                         if (env.PREV_IMAGE) {
                             sh "kubectl set image deployment/${env.APP_NAME} ${env.APP_NAME}=${env.PREV_IMAGE} -n ${env.NAMESPACE}"
-                            error "Rolled back to ${env.PREV_IMAGE}"
+                            error "Quality Gate failed. Rolled back to ${env.PREV_IMAGE}"
                         }
                     }
                 }
