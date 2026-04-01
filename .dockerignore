@@ -6,8 +6,6 @@
 .gradle
 **/.gradle
 
-build
-**/build
+
 
 load-tester
-
