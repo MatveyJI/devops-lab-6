@@ -32,19 +32,16 @@ pipeline {
         stage('Capture Previous Release') {
             steps {
                 script {
-                    // Пытаемся получить текущий образ. Обрабатываем пустую строку и "null" от Kubernetes.
-                    def currentImage = sh(
+                    env.PREV_IMAGE = sh(
                         returnStdout: true,
-                        script: "kubectl get deployment/${APP_NAME} -o jsonpath='{.spec.template.spec.containers[0].image}' || echo ''"
+                        script: "kubectl get deployment/${APP_NAME} -o jsonpath=\"{.spec.template.spec.containers[?(@.name=='${APP_NAME}')].image}\""
                     ).trim()
 
-                    if (currentImage && currentImage != "" && currentImage != "null") {
-                        env.PREV_IMAGE = currentImage
-                        echo "Captured previous image: ${env.PREV_IMAGE}"
-                    } else {
-                        env.PREV_IMAGE = "${REGISTRY}/${APP_NAME}:latest"
-                        echo "No valid previous image found. Using fallback for rollback: ${env.PREV_IMAGE}"
+                    if (!env.PREV_IMAGE) {
+                        error('Не удалось определить предыдущий image для rollback')
                     }
+
+                    echo "Captured previous image tag for rollback"
                 }
             }
         }
@@ -54,9 +51,7 @@ pipeline {
                 script {
                     def imageTag = "${env.BUILD_NUMBER}"
                     env.NEW_IMAGE = "${REGISTRY}/${APP_NAME}:${imageTag}"
-                    
-                    echo "Starting Docker build for image: ${env.NEW_IMAGE}"
-                    // Команда выполняется в корне воркспейса, где лежит Dockerfile
+
                     sh "docker build -t ${env.NEW_IMAGE} ."
                     sh "docker push ${env.NEW_IMAGE}"
                 }
@@ -146,11 +141,11 @@ pipeline {
         failure {
             script {
                 if (env.PREV_IMAGE?.trim()) {
-                    echo "Release failed. Rolling back to previous stable image: ${env.PREV_IMAGE}"
+                    echo 'Release failed. Rolling back to previous stable image.'
                     sh "kubectl set image deployment/${APP_NAME} ${APP_NAME}=${env.PREV_IMAGE}"
                     sh "kubectl rollout status deployment/${APP_NAME} --timeout=180s"
                     sh "kubectl wait --for=condition=ready pod -l app=${APP_NAME} --timeout=180s"
-                    sh "curl -fsS ${env.LOAD_TEST_URL}/status >/dev/null || echo 'Rollback done but app status is not OK'"
+                    sh "curl -fsS http://work.127.0.0.1.nip.io/work/status >/dev/null"
                 }
             }
         }
