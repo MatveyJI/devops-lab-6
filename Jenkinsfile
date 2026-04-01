@@ -2,12 +2,11 @@ pipeline {
     agent { label 'docker' }
 
     environment {
-        // Адрес для Docker (через ваш port-forward)
         EXTERNAL_REGISTRY = "host.docker.internal:5000"
-        // Адрес для Kubernetes (внутри кластера)
         INTERNAL_REGISTRY = "registry.cicd-task.svc.cluster.local:443"
-        
         APP_NAME = "work-app"
+        
+        // Параметры для нагрузочного теста (пригодятся в следующих стадиях)
         LOAD_TEST_URL = "http://work.127.0.0.1.nip.io/work"
         TARGET_RPS = "220"
         SUCCESS_THRESHOLD = "95"
@@ -24,24 +23,24 @@ pipeline {
         stage('Build Artifact') {
             steps {
                 sh './gradlew build -x test'
-                sh 'ls -R build/' 
             }
         }
 
         stage('Capture Previous Release') {
             steps {
                 script {
-                    // Пытаемся получить текущий образ из деплоймента
+                    // Получаем текущий образ, чтобы знать куда откатываться
                     def currentImage = sh(
-                        returnStatus: false,
-                        returnStdout: true,
-                        script: "kubectl get deployment/${env.APP_NAME} -o jsonpath='{.spec.template.spec.containers[0].image}' || echo ''"
-                    ).trim()
+                        returnStatus: true, 
+                        script: "kubectl get deployment/${env.APP_NAME} -n cicd-task"
+                    ) == 0 ? sh(
+                        script: "kubectl get deployment/${env.APP_NAME} -n cicd-task -o jsonpath='{.spec.template.spec.containers[0].image}'",
+                        returnStdout: true
+                    ).trim() : ""
 
-                    if (currentImage && currentImage != "" && currentImage != "null") {
+                    if (currentImage && currentImage != "null") {
                         env.PREV_IMAGE = currentImage
                     } else {
-                        // Фолбек на внутренний адрес, если деплоймента еще нет
                         env.PREV_IMAGE = "${env.INTERNAL_REGISTRY}/${env.APP_NAME}:latest"
                     }
                     echo "PREV_IMAGE set to: ${env.PREV_IMAGE}"
@@ -52,18 +51,25 @@ pipeline {
         stage('Build & Push Image') {
             steps {
                 script {
-                    // Для сборки и пуша используем localhost
                     env.BUILD_TAG = "${env.EXTERNAL_REGISTRY}/${env.APP_NAME}:${env.BUILD_NUMBER}"
-                    // Для деплоя в K8s используем внутренний DNS
                     env.K8S_TAG = "${env.INTERNAL_REGISTRY}/${env.APP_NAME}:${env.BUILD_NUMBER}"
                     
-                    echo "Building local tag: ${env.BUILD_TAG}"
+                    echo "Step 1: Building Docker image..."
                     sh "docker build -t ${env.BUILD_TAG} ."
                     
-                    echo "Pushing to registry via port-forward..."
-                    sh "docker push ${env.BUILD_TAG}"
+                    echo "Step 2: Pushing to registry..."
+                    // Используем ID 'registry-creds', который ты создал в Jenkins
+                    withCredentials([usernamePassword(credentialsId: 'registry-creds', 
+                                     passwordVariable: 'REG_PASS', 
+                                     usernameVariable: 'REG_USER')]) {
+                        
+                        sh "docker login ${env.EXTERNAL_REGISTRY} -u ${REG_USER} -p ${REG_PASS}"
+                        sh "docker push ${env.BUILD_TAG}"
+                        // Очищаем за собой данные логина
+                        sh "docker logout ${env.EXTERNAL_REGISTRY}"
+                    }
                     
-                    // Дополнительно тегируем внутренним именем, чтобы kubectl понимал, что деплоить
+                    echo "Step 3: Creating internal tag for K8s..."
                     sh "docker tag ${env.BUILD_TAG} ${env.K8S_TAG}"
                 }
             }
@@ -71,9 +77,9 @@ pipeline {
 
         stage('Deploy to K8s') {
             steps {
-                // Указываем K8s использовать ВНУТРЕННИЙ адрес для скачивания образа
-                sh "kubectl set image deployment/${env.APP_NAME} ${env.APP_NAME}=${env.K8S_TAG}"
-                sh "kubectl rollout status deployment/${env.APP_NAME} --timeout=180s"
+                echo "Deploying image: ${env.K8S_TAG}"
+                sh "kubectl set image deployment/${env.APP_NAME} ${env.APP_NAME}=${env.K8S_TAG} -n cicd-task"
+                sh "kubectl rollout status deployment/${env.APP_NAME} -n cicd-task --timeout=180s"
             }
         }
     }
@@ -82,13 +88,14 @@ pipeline {
         failure {
             script {
                 if (env.PREV_IMAGE) {
-                    echo "Rolling back to ${env.PREV_IMAGE}"
-                    sh "kubectl set image deployment/${env.APP_NAME} ${env.APP_NAME}=${env.PREV_IMAGE}"
+                    echo "Rollback initiated to: ${env.PREV_IMAGE}"
+                    sh "kubectl set image deployment/${env.APP_NAME} ${env.APP_NAME}=${env.PREV_IMAGE} -n cicd-task"
                 }
             }
         }
         always {
-            archiveArtifacts artifacts: 'artifacts/load-tests/**', allowEmptyArchive: true
+            // Сохраняем отчеты, если они были созданы в папке artifacts
+            archiveArtifacts artifacts: 'build/reports/**', allowEmptyArchive: true
         }
     }
 }
