@@ -1,5 +1,5 @@
 pipeline {
-    agent any
+    agent { label 'docker' }
 
     environment {
         REGISTRY = "registry.cicd-task.svc.cluster.local:443"
