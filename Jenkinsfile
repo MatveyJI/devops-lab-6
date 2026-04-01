@@ -4,7 +4,7 @@ pipeline {
     environment {
         APP_NAME = "work-app"
         NAMESPACE = "cicd-task"
-        // Параметры из задания
+        // Требования по нагрузке и качеству
         TARGET_RPS = "220"
         SUCCESS_THRESHOLD = "95"
         LOAD_TEST_URL = "http://work.127.0.0.1.nip.io/work"
@@ -20,7 +20,7 @@ pipeline {
 
         stage('Build Artifact') {
             steps {
-                // Создание структуры fast-jar для Quarkus
+                // Сборка fast-jar для корректной работы образа
                 sh './gradlew build -x test -Dquarkus.package.type=fast-jar'
             }
         }
@@ -28,7 +28,7 @@ pipeline {
         stage('Capture Previous Release') {
             steps {
                 script {
-                    // Сохраняем текущий тег образа для возможности отката 
+                    // Сохраняем текущий образ для реализации отката [cite: 18]
                     def currentImage = sh(
                         returnStatus: true, 
                         script: "kubectl get deployment/${env.APP_NAME} -n ${env.NAMESPACE}"
@@ -46,7 +46,7 @@ pipeline {
         stage('Build & Load to KIND') {
             steps {
                 script {
-                    // Запрещено использовать тег latest [cite: 6]
+                    // Использование уникальных тегов вместо latest [cite: 6]
                     def imageTag = "${env.APP_NAME}:build-${env.BUILD_NUMBER}"
                     
                     echo "Building Docker image..."
@@ -65,13 +65,12 @@ pipeline {
                 echo "Deploying image: ${env.FINAL_IMAGE}"
                 sh "kubectl set image deployment/${env.APP_NAME} ${env.APP_NAME}=${env.FINAL_IMAGE} -n ${env.NAMESPACE}"
                 
-                // Настройка политики для локальных образов KIND
                 sh """
                     kubectl patch deployment ${env.APP_NAME} -n ${env.NAMESPACE} \
                     -p '{"spec":{"template":{"spec":{"containers":[{"name":"${env.APP_NAME}","imagePullPolicy":"IfNotPresent"}]}}}}'
                 """
                 
-                // Ожидание готовности pod [cite: 9]
+                // Ожидание завершения rollout [cite: 9]
                 sh "kubectl rollout status deployment/${env.APP_NAME} -n ${env.NAMESPACE} --timeout=180s"
             }
         }
@@ -79,10 +78,11 @@ pipeline {
         stage('Load Testing') {
             steps {
                 script {
-                    echo "Starting Load Test Run 1 (Warm-up)..." [cite: 12]
+                    // Два прогона согласно заданию [cite: 12]
+                    echo "Starting Load Test Run 1 (Warm-up)..."
                     sh "LOAD_TEST_RUN_NAME=warmup ./scripts/run-load-test.sh"
                     
-                    echo "Starting Load Test Run 2 (Analysis)..." [cite: 12]
+                    echo "Starting Load Test Run 2 (Analysis)..."
                     sh "LOAD_TEST_RUN_NAME=final ./scripts/run-load-test.sh"
                 }
             }
@@ -91,7 +91,7 @@ pipeline {
         stage('Quality Gate & Rollback') {
             steps {
                 script {
-                    // Анализ результатов второго прогона 
+                    // Анализ результатов второго прогона [cite: 14]
                     def metricsFile = "artifacts/load-tests/final.metrics"
                     def props = readProperties file: metricsFile
                     
@@ -103,8 +103,9 @@ pipeline {
                     echo "Analysis: RPS ${actualRps}/${targetRps}, Success Rate: ${successRate}%"
 
                     if (successRate < threshold || actualRps < targetRps) {
-                        echo "Quality Gate FAILED. Initiating Rollback..." [cite: 14, 17]
-                        if (env.PREV_IMAGE) {
+                        echo "Quality Gate FAILED. Initiating Rollback..."
+                        if (env.PREV_IMAGE && env.PREV_IMAGE != "") {
+                            // Откат на предыдущий стабильный тег [cite: 17, 18]
                             sh "kubectl set image deployment/${env.APP_NAME} ${env.APP_NAME}=${env.PREV_IMAGE} -n ${env.NAMESPACE}"
                             sh "kubectl rollout status deployment/${env.APP_NAME} -n ${env.NAMESPACE}"
                             error "Release rejected: metrics below threshold. Rolled back to ${env.PREV_IMAGE}"
@@ -112,7 +113,7 @@ pipeline {
                             error "Release rejected and no previous image found for rollback."
                         }
                     } else {
-                        echo "Quality Gate PASSED. Release successful."
+                        echo "Quality Gate PASSED."
                     }
                 }
             }
@@ -121,7 +122,7 @@ pipeline {
 
     post {
         always {
-            // Сохранение результатов тестов как артефактов 
+            // Сохранение результатов и отчетов [cite: 16]
             archiveArtifacts artifacts: 'artifacts/load-tests/*.log, artifacts/load-tests/*.metrics', allowEmptyArchive: true
             archiveArtifacts artifacts: 'build/reports/**', allowEmptyArchive: true
         }
