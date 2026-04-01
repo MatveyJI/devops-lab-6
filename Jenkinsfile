@@ -3,7 +3,7 @@ pipeline {
 
     environment {
         // Адрес для Docker (через ваш port-forward)
-        EXTERNAL_REGISTRY = "localhost:5000"
+        EXTERNAL_REGISTRY = "host.docker.internal:5000"
         // Адрес для Kubernetes (внутри кластера)
         INTERNAL_REGISTRY = "registry.cicd-task.svc.cluster.local:443"
         
