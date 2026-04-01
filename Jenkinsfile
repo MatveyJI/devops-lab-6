@@ -52,11 +52,7 @@ pipeline {
         stage('Deploy & Configure K8s') {
             steps {
                 script {
-                    // Удаляем старый конфликтующий Ingress, если он есть в default или cicd-task
                     sh "kubectl delete ingress work-app-ingress -n default --ignore-not-found"
-                    sh "kubectl delete ingress ${env.APP_NAME} -n ${env.NAMESPACE} --ignore-not-found"
-
-                    // Применяем манифесты
                     sh """
 cat <<EOF | kubectl apply -n ${env.NAMESPACE} -f -
 apiVersion: v1
@@ -90,30 +86,27 @@ spec:
               number: 80
 EOF
                     """
-                    
                     sh "kubectl set image deployment/${env.APP_NAME} ${env.APP_NAME}=${env.FINAL_IMAGE} -n ${env.NAMESPACE}"
                     sh "kubectl rollout status deployment/${env.APP_NAME} -n ${env.NAMESPACE} --timeout=180s"
                 }
             }
         }
 
-        stage('Wait for Availability') {
+        stage('Wait & Settle') {
             steps {
                 script {
-                    echo "Waiting for ${env.LOAD_TEST_URL} to be 200 OK..."
+                    echo "Waiting for stable 200 OK..."
                     sh """
-                        SUCCESS=0
                         for i in {1..20}; do
                           CODE=\$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 2 ${env.LOAD_TEST_URL} || echo "000")
                           if [ "\$CODE" == "200" ]; then
-                            echo "Ready!"
-                            SUCCESS=1
-                            break
+                            echo "Service is up. Waiting 10s for networking to settle..."
+                            sleep 10
+                            exit 0
                           fi
-                          echo "Attempt \$i: HTTP \$CODE. Retrying..."
                           sleep 5
                         done
-                        if [ "\$SUCCESS" == "0" ]; then exit 1; fi
+                        exit 1
                     """
                 }
             }
@@ -121,8 +114,18 @@ EOF
 
         stage('Load Testing') {
             steps {
-                sh "LOAD_TEST_RUN_NAME=warmup ./scripts/run-load-test.sh"
-                sh "LOAD_TEST_RUN_NAME=final ./scripts/run-load-test.sh"
+                script {
+                    // Используем цикл для Warm-up, чтобы проигнорировать возможный 'Connection reset' в самом начале
+                    echo "Starting Warm-up with retries..."
+                    sh """
+                        for i in {1..3}; do
+                          LOAD_TEST_RUN_NAME=warmup ./scripts/run-load-test.sh && break || sleep 5
+                        done
+                    """
+                    
+                    echo "Starting Final Analysis..."
+                    sh "LOAD_TEST_RUN_NAME=final ./scripts/run-load-test.sh"
+                }
             }
         }
 
@@ -133,12 +136,14 @@ EOF
                     double rps = props['SUCCESS_RPS']?.toDouble() ?: 0
                     double rate = props['SUCCESS_RATE']?.toDouble() ?: 0
                     
-                    echo "Metrics: RPS \$rps, Success Rate \$rate%"
+                    echo "Final Analysis: RPS \$rps, Success Rate \$rate%"
 
                     if (rate < env.SUCCESS_THRESHOLD.toDouble() || rps < env.TARGET_RPS.toDouble()) {
                         if (env.PREV_IMAGE) {
+                            echo "Quality Gate FAILED. Rolling back..."
                             sh "kubectl set image deployment/${env.APP_NAME} ${env.APP_NAME}=${env.PREV_IMAGE} -n ${env.NAMESPACE}"
-                            error "Quality Gate failed. Rolled back to ${env.PREV_IMAGE}"
+                            sh "kubectl rollout status deployment/${env.APP_NAME} -n ${env.NAMESPACE}"
+                            error "Deployment rejected. Metrics too low."
                         }
                     }
                 }
