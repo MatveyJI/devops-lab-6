@@ -48,3 +48,17 @@ load-tester/load_test_report_*.txt
 
 # OS
 Thumbs.db
+
+# Local infra secrets and generated certs/keys
+*.key
+*.crt
+*htpasswd*
+registry_cert.json
+dind_server.json
+
+# Generated load-test artifacts
+artifacts/
+load_test_report_*.txt
+result.txt
+txt.txt
+z.txt

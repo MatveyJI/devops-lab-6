@@ -1,0 +1,67 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: jenkins-pvc
+  namespace: cicd-task
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jenkins
+  namespace: cicd-task
+spec:
+  ports:
+  - port: 8080
+    targetPort: 8080
+  selector:
+    app: jenkins
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jenkins
+  namespace: cicd-task
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jenkins
+  template:
+    metadata:
+      labels:
+        app: jenkins
+    spec:
+      securityContext:
+        fsGroup: 1000
+      initContainers:
+      - name: inject-docker-cli
+        image: docker:24.0.6-cli
+        command: ["sh", "-c", "cp /usr/local/bin/docker /shared-tools/docker"]
+        volumeMounts:
+        - name: tools
+          mountPath: /shared-tools
+      containers:
+      - name: jenkins
+        image: jenkins/jenkins:lts
+        ports:
+        - containerPort: 8080
+        env:
+        - name: PATH
+          value: "/shared-tools:/opt/java/openjdk/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+        volumeMounts:
+        - name: tools
+          mountPath: /shared-tools
+        - name: jenkins-home
+          mountPath: /var/jenkins_home
+      volumes:
+      - name: tools
+        emptyDir: {}
+      - name: jenkins-home
+        persistentVolumeClaim:
+          claimName: jenkins-pvc

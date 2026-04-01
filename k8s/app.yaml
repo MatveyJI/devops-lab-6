@@ -1,0 +1,56 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: work-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: work-app
+  template:
+    metadata:
+      labels:
+        app: work-app
+    spec:
+      imagePullSecrets:
+        - name: registry-cred
+      containers:
+        - name: work-app
+          # Тег :latest или конкретный будет меняться через Jenkins
+          image: registry.cicd-task.svc.cluster.local:443/work-app:34 
+          imagePullPolicy: IfNotPresent
+          ports:                      
+            - containerPort: 8080
+              name: http
+          env:
+            - name: APP_API_LIMIT
+              value: "350"
+            - name: APP_API_TIMEOUT
+              value: "6000"
+          readinessProbe:
+            httpGet:
+              path: /work/status
+              port: 8080
+            initialDelaySeconds: 15 # Увеличено для прогрева JVM
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /work/status
+              port: 8080
+            initialDelaySeconds: 20 # Увеличено для прогрева JVM
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: work-app
+  labels:
+    app: work-app
+spec:
+  ports:
+    - port: 80
+      targetPort: 8080
+      name: http
+  selector:
+    app: work-app
+  type: ClusterIP

@@ -1,0 +1,12 @@
+{
+  "name": "Prometheus",
+  "type": "prometheus",
+  "access": "proxy",
+  "url": "http://monitoring-stack-kube-prom-prometheus.monitoring.svc.cluster.local:9090",
+  "isDefault": true,
+  "basicAuth": false,
+  "jsonData": {
+    "httpMethod": "POST",
+    "timeInterval": "10s"
+  }
+}

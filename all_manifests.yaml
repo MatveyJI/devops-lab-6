@@ -1,0 +1,286 @@
+apiVersion: v1
+items:
+- apiVersion: apps/v1
+  kind: Deployment
+  metadata:
+    annotations:
+      deployment.kubernetes.io/revision: "1"
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"apps/v1","kind":"Deployment","metadata":{"annotations":{},"name":"docker-dind","namespace":"cicd-task"},"spec":{"selector":{"matchLabels":{"app":"docker-dind"}},"template":{"metadata":{"labels":{"app":"docker-dind"}},"spec":{"containers":[{"args":["--tlsverify","--tlscacert=/certs/ca.crt","--tlscert=/certs/server.crt","--tlskey=/certs/server.key","-H=tcp://0.0.0.0:2376","--mtu=1400"],"env":[{"name":"DOCKER_TLS_CERTDIR","value":""}],"image":"docker:24.0.6-dind","name":"dind","securityContext":{"privileged":true},"volumeMounts":[{"mountPath":"/certs","name":"certs","readOnly":true}]}],"volumes":[{"name":"certs","secret":{"secretName":"dind-certs"}}]}}}}
+    creationTimestamp: "2026-03-27T12:16:30Z"
+    generation: 1
+    name: docker-dind
+    namespace: cicd-task
+    resourceVersion: "259081"
+    uid: 5929fb15-d350-4c2e-b2c5-316abc89db11
+  spec:
+    progressDeadlineSeconds: 600
+    replicas: 1
+    revisionHistoryLimit: 10
+    selector:
+      matchLabels:
+        app: docker-dind
+    strategy:
+      rollingUpdate:
+        maxSurge: 25%
+        maxUnavailable: 25%
+      type: RollingUpdate
+    template:
+      metadata:
+        labels:
+          app: docker-dind
+      spec:
+        containers:
+        - args:
+          - --tlsverify
+          - --tlscacert=/certs/ca.crt
+          - --tlscert=/certs/server.crt
+          - --tlskey=/certs/server.key
+          - -H=tcp://0.0.0.0:2376
+          - --mtu=1400
+          env:
+          - name: DOCKER_TLS_CERTDIR
+          image: docker:24.0.6-dind
+          imagePullPolicy: IfNotPresent
+          name: dind
+          resources: {}
+          securityContext:
+            privileged: true
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          volumeMounts:
+          - mountPath: /certs
+            name: certs
+            readOnly: true
+        dnsPolicy: ClusterFirst
+        restartPolicy: Always
+        schedulerName: default-scheduler
+        securityContext: {}
+        terminationGracePeriodSeconds: 30
+        volumes:
+        - name: certs
+          secret:
+            defaultMode: 420
+            secretName: dind-certs
+  status:
+    availableReplicas: 1
+    conditions:
+    - lastTransitionTime: "2026-03-27T12:16:42Z"
+      lastUpdateTime: "2026-03-27T12:16:42Z"
+      message: Deployment has minimum availability.
+      reason: MinimumReplicasAvailable
+      status: "True"
+      type: Available
+    - lastTransitionTime: "2026-03-27T12:16:30Z"
+      lastUpdateTime: "2026-03-27T12:16:42Z"
+      message: ReplicaSet "docker-dind-5668b5d5d" has successfully progressed.
+      reason: NewReplicaSetAvailable
+      status: "True"
+      type: Progressing
+    observedGeneration: 1
+    readyReplicas: 1
+    replicas: 1
+    updatedReplicas: 1
+- apiVersion: apps/v1
+  kind: Deployment
+  metadata:
+    annotations:
+      deployment.kubernetes.io/revision: "1"
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"apps/v1","kind":"Deployment","metadata":{"annotations":{},"name":"jenkins","namespace":"cicd-task"},"spec":{"replicas":1,"selector":{"matchLabels":{"app":"jenkins"}},"template":{"metadata":{"labels":{"app":"jenkins"}},"spec":{"containers":[{"env":[{"name":"PATH","value":"/shared-tools:/opt/java/openjdk/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"}],"image":"jenkins/jenkins:lts","name":"jenkins","ports":[{"containerPort":8080}],"volumeMounts":[{"mountPath":"/shared-tools","name":"tools"},{"mountPath":"/var/jenkins_home","name":"jenkins-home"}]}],"initContainers":[{"command":["sh","-c","cp /usr/local/bin/docker /shared-tools/docker"],"image":"docker:24.0.6-cli","name":"inject-docker-cli","volumeMounts":[{"mountPath":"/shared-tools","name":"tools"}]}],"securityContext":{"fsGroup":1000},"volumes":[{"emptyDir":{},"name":"tools"},{"name":"jenkins-home","persistentVolumeClaim":{"claimName":"jenkins-pvc"}}]}}}}
+    creationTimestamp: "2026-03-27T12:25:44Z"
+    generation: 1
+    name: jenkins
+    namespace: cicd-task
+    resourceVersion: "260104"
+    uid: 6b3eb736-1979-42c9-a3c0-957482c2e0b5
+  spec:
+    progressDeadlineSeconds: 600
+    replicas: 1
+    revisionHistoryLimit: 10
+    selector:
+      matchLabels:
+        app: jenkins
+    strategy:
+      rollingUpdate:
+        maxSurge: 25%
+        maxUnavailable: 25%
+      type: RollingUpdate
+    template:
+      metadata:
+        labels:
+          app: jenkins
+      spec:
+        containers:
+        - env:
+          - name: PATH
+            value: /shared-tools:/opt/java/openjdk/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+          image: jenkins/jenkins:lts
+          imagePullPolicy: IfNotPresent
+          name: jenkins
+          ports:
+          - containerPort: 8080
+            protocol: TCP
+          resources: {}
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          volumeMounts:
+          - mountPath: /shared-tools
+            name: tools
+          - mountPath: /var/jenkins_home
+            name: jenkins-home
+        dnsPolicy: ClusterFirst
+        initContainers:
+        - command:
+          - sh
+          - -c
+          - cp /usr/local/bin/docker /shared-tools/docker
+          image: docker:24.0.6-cli
+          imagePullPolicy: IfNotPresent
+          name: inject-docker-cli
+          resources: {}
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          volumeMounts:
+          - mountPath: /shared-tools
+            name: tools
+        restartPolicy: Always
+        schedulerName: default-scheduler
+        securityContext:
+          fsGroup: 1000
+        terminationGracePeriodSeconds: 30
+        volumes:
+        - emptyDir: {}
+          name: tools
+        - name: jenkins-home
+          persistentVolumeClaim:
+            claimName: jenkins-pvc
+  status:
+    availableReplicas: 1
+    conditions:
+    - lastTransitionTime: "2026-03-27T12:26:10Z"
+      lastUpdateTime: "2026-03-27T12:26:10Z"
+      message: Deployment has minimum availability.
+      reason: MinimumReplicasAvailable
+      status: "True"
+      type: Available
+    - lastTransitionTime: "2026-03-27T12:25:44Z"
+      lastUpdateTime: "2026-03-27T12:26:10Z"
+      message: ReplicaSet "jenkins-6f848f46d9" has successfully progressed.
+      reason: NewReplicaSetAvailable
+      status: "True"
+      type: Progressing
+    observedGeneration: 1
+    readyReplicas: 1
+    replicas: 1
+    updatedReplicas: 1
+- apiVersion: apps/v1
+  kind: Deployment
+  metadata:
+    annotations:
+      deployment.kubernetes.io/revision: "2"
+      kubectl.kubernetes.io/last-applied-configuration: |
+        {"apiVersion":"apps/v1","kind":"Deployment","metadata":{"annotations":{},"name":"registry","namespace":"cicd-task"},"spec":{"selector":{"matchLabels":{"app":"registry"}},"template":{"metadata":{"annotations":{"vault.hashicorp.com/agent-inject":"true","vault.hashicorp.com/agent-inject-command-htpasswd":"killall -HUP nginx","vault.hashicorp.com/agent-inject-secret-htpasswd":"secret/data/registry/reader","vault.hashicorp.com/agent-inject-template-htpasswd":"{{- with secret \"secret/data/registry/reader\" -}}\n{{ .Data.data.username }}:{{ .Data.data.password_hash }}\n{{ end }}\n{{- with secret \"secret/data/registry/writer\" -}}\n{{ .Data.data.username }}:{{ .Data.data.password_hash }}\n{{ end }}\n","vault.hashicorp.com/role":"nginx-role","vault.hashicorp.com/template-static-secret-render-interval":"30s"},"labels":{"app":"registry"}},"spec":{"containers":[{"image":"nginx:alpine","name":"nginx-proxy","ports":[{"containerPort":443}],"volumeMounts":[{"mountPath":"/certs","name":"certs","readOnly":true},{"mountPath":"/etc/nginx/nginx.conf","name":"nginx-conf","readOnly":true,"subPath":"nginx.conf"}]},{"env":[{"name":"REGISTRY_HTTP_ADDR","value":"127.0.0.1:5000"}],"image":"registry:2","name":"registry"}],"serviceAccountName":"nginx-sa","shareProcessNamespace":true,"volumes":[{"name":"certs","secret":{"secretName":"registry-certs"}},{"configMap":{"name":"nginx-registry-config"},"name":"nginx-conf"}]}}}}
+    creationTimestamp: "2026-03-27T12:16:30Z"
+    generation: 2
+    name: registry
+    namespace: cicd-task
+    resourceVersion: "259920"
+    uid: cedcee86-b52c-4cb2-b2d7-dbc42959a227
+  spec:
+    progressDeadlineSeconds: 600
+    replicas: 1
+    revisionHistoryLimit: 10
+    selector:
+      matchLabels:
+        app: registry
+    strategy:
+      rollingUpdate:
+        maxSurge: 25%
+        maxUnavailable: 25%
+      type: RollingUpdate
+    template:
+      metadata:
+        annotations:
+          kubectl.kubernetes.io/restartedAt: "2026-03-27T15:24:42+03:00"
+          vault.hashicorp.com/agent-inject: "true"
+          vault.hashicorp.com/agent-inject-command-htpasswd: killall -HUP nginx
+          vault.hashicorp.com/agent-inject-secret-htpasswd: secret/data/registry/reader
+          vault.hashicorp.com/agent-inject-template-htpasswd: |
+            {{- with secret "secret/data/registry/reader" -}}
+            {{ .Data.data.username }}:{{ .Data.data.password_hash }}
+            {{ end }}
+            {{- with secret "secret/data/registry/writer" -}}
+            {{ .Data.data.username }}:{{ .Data.data.password_hash }}
+            {{ end }}
+          vault.hashicorp.com/role: nginx-role
+          vault.hashicorp.com/template-static-secret-render-interval: 30s
+        labels:
+          app: registry
+      spec:
+        containers:
+        - image: nginx:alpine
+          imagePullPolicy: IfNotPresent
+          name: nginx-proxy
+          ports:
+          - containerPort: 443
+            protocol: TCP
+          resources: {}
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+          volumeMounts:
+          - mountPath: /certs
+            name: certs
+            readOnly: true
+          - mountPath: /etc/nginx/nginx.conf
+            name: nginx-conf
+            readOnly: true
+            subPath: nginx.conf
+        - env:
+          - name: REGISTRY_HTTP_ADDR
+            value: 127.0.0.1:5000
+          image: registry:2
+          imagePullPolicy: IfNotPresent
+          name: registry
+          resources: {}
+          terminationMessagePath: /dev/termination-log
+          terminationMessagePolicy: File
+        dnsPolicy: ClusterFirst
+        restartPolicy: Always
+        schedulerName: default-scheduler
+        securityContext: {}
+        serviceAccount: nginx-sa
+        serviceAccountName: nginx-sa
+        shareProcessNamespace: true
+        terminationGracePeriodSeconds: 30
+        volumes:
+        - name: certs
+          secret:
+            defaultMode: 420
+            secretName: registry-certs
+        - configMap:
+            defaultMode: 420
+            name: nginx-registry-config
+          name: nginx-conf
+  status:
+    availableReplicas: 1
+    conditions:
+    - lastTransitionTime: "2026-03-27T12:24:37Z"
+      lastUpdateTime: "2026-03-27T12:24:37Z"
+      message: Deployment has minimum availability.
+      reason: MinimumReplicasAvailable
+      status: "True"
+      type: Available
+    - lastTransitionTime: "2026-03-27T12:16:30Z"
+      lastUpdateTime: "2026-03-27T12:24:46Z"
+      message: ReplicaSet "registry-d845b6fd5" has successfully progressed.
+      reason: NewReplicaSetAvailable
+      status: "True"
+      type: Progressing
+    observedGeneration: 2
+    readyReplicas: 1
+    replicas: 1
+    updatedReplicas: 1
+kind: List
+metadata:
+  resourceVersion: ""

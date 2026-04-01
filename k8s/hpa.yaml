@@ -1,0 +1,26 @@
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: work-app-hpa
+spec:
+  scaleTargetRef: # чем будет управлять
+    apiVersion: apps/v1
+    kind: Deployment
+    name: work-app
+  minReplicas: 1
+  maxReplicas: 10
+  metrics:
+  - type: Pods
+    pods:
+      metric:
+        name: work_active_requests_hpa # кастомная метрика
+      target:
+        type: AverageValue
+        averageValue: "50" # когда активных запросов > 50 на под создаем новый
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 0 # Мгновенная реакция на рост
+      policies:
+      - type: Pods
+        value: 4 # Добавлять до 4 подов сразу
+        periodSeconds: 1

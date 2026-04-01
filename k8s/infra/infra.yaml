@@ -1,0 +1,141 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nginx-sa
+  namespace: cicd-task
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: registry
+  namespace: cicd-task
+spec:
+  ports:
+  - port: 443
+    targetPort: 443
+  selector:
+    app: registry
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: registry
+  namespace: cicd-task
+spec:
+  selector:
+    matchLabels:
+      app: registry
+  template:
+    metadata:
+      labels:
+        app: registry
+      annotations:
+        vault.hashicorp.com/agent-inject: "true"
+        vault.hashicorp.com/role: "nginx-role"
+        # Обновлять каждые 30 секунд
+        vault.hashicorp.com/template-static-secret-render-interval: "30s"
+        
+        vault.hashicorp.com/agent-inject-secret-htpasswd: "secret/data/registry/reader"
+        vault.hashicorp.com/agent-inject-template-htpasswd: |
+          {{- with secret "secret/data/registry/reader" -}}
+          {{ .Data.data.username }}:{{ .Data.data.password_hash }}
+          {{ end }}
+          {{- with secret "secret/data/registry/writer" -}}
+          {{ .Data.data.username }}:{{ .Data.data.password_hash }}
+          {{ end }}
+          
+        # Перезагружаем Nginx при смене паролей
+        vault.hashicorp.com/agent-inject-command-htpasswd: "killall -HUP nginx"
+    spec:
+      serviceAccountName: nginx-sa
+      shareProcessNamespace: true
+      containers:
+      - name: nginx-proxy
+        image: nginx:alpine
+        ports:
+        - containerPort: 443
+        volumeMounts:
+        - name: certs
+          mountPath: /certs
+          readOnly: true
+        - name: nginx-conf
+          mountPath: /etc/nginx/nginx.conf
+          subPath: nginx.conf
+          readOnly: true
+      - name: registry
+        image: registry:2
+        env:
+        - name: REGISTRY_HTTP_ADDR
+          value: "127.0.0.1:5000"
+      volumes:
+      - name: certs
+        secret:
+          secretName: registry-certs
+      - name: nginx-conf
+        configMap:
+          name: nginx-registry-config
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: docker-dind
+  namespace: cicd-task
+spec:
+  ports:
+  - port: 2376
+    targetPort: 2376
+  selector:
+    app: docker-dind
+---
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: docker-dind
+  namespace: cicd-task
+spec:
+  selector:
+    matchLabels:
+      app: docker-dind
+  template:
+    metadata:
+      labels:
+        app: docker-dind
+    spec:
+      # Добавляем initContainer для настройки доверия к Registry
+      initContainers:
+      - name: setup-certs
+        image: alpine
+        command: ["sh", "-c", "mkdir -p /etc/docker/certs.d/registry.cicd-task.svc.cluster.local:443 && cp /certs/ca.crt /etc/docker/certs.d/registry.cicd-task.svc.cluster.local:443/ca.crt"]
+        volumeMounts:
+        - name: certs
+          mountPath: /certs
+        - name: docker-certs-dir
+          mountPath: /etc/docker/certs.d
+      containers:
+      - name: dind
+        image: docker:24.0.6-dind
+        env:
+        - name: DOCKER_TLS_CERTDIR
+          value: ""
+        securityContext:
+          privileged: true
+        args:
+        - "--tlsverify"
+        - "--tlscacert=/certs/ca.crt"
+        - "--tlscert=/certs/server.crt"
+        - "--tlskey=/certs/server.key"
+        - "-H=tcp://0.0.0.0:2376"
+        - "--mtu=1400"
+        volumeMounts:
+        - name: certs
+          mountPath: /certs
+          readOnly: true
+        - name: docker-certs-dir
+          mountPath: /etc/docker/certs.d
+      volumes:
+      - name: certs
+        secret:
+          secretName: dind-certs
+      - name: docker-certs-dir
+        emptyDir: {}
