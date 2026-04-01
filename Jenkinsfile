@@ -26,6 +26,7 @@ pipeline {
         stage('Capture Previous Release') {
             steps {
                 script {
+                    // Сохраняем текущий образ для возможного отката
                     def currentImage = sh(
                         returnStatus: true, 
                         script: "kubectl get deployment/${env.APP_NAME} -n ${env.NAMESPACE}"
@@ -52,7 +53,11 @@ pipeline {
         stage('Deploy & Configure K8s') {
             steps {
                 script {
+                    // Чистим старые ингрессы во всех возможных местах для избежания конфликтов
                     sh "kubectl delete ingress work-app-ingress -n default --ignore-not-found"
+                    sh "kubectl delete ingress ${env.APP_NAME} -n ${env.NAMESPACE} --ignore-not-found"
+
+                    // Применяем манифесты (Service + Ingress)
                     sh """
 cat <<EOF | kubectl apply -n ${env.NAMESPACE} -f -
 apiVersion: v1
@@ -86,6 +91,8 @@ spec:
               number: 80
 EOF
                     """
+                    
+                    // Обновляем Deployment
                     sh "kubectl set image deployment/${env.APP_NAME} ${env.APP_NAME}=${env.FINAL_IMAGE} -n ${env.NAMESPACE}"
                     sh "kubectl rollout status deployment/${env.APP_NAME} -n ${env.NAMESPACE} --timeout=180s"
                 }
@@ -104,6 +111,7 @@ EOF
                             sleep 10
                             exit 0
                           fi
+                          echo "Attempt \$i: HTTP \$CODE. Retrying..."
                           sleep 5
                         done
                         exit 1
@@ -115,8 +123,7 @@ EOF
         stage('Load Testing') {
             steps {
                 script {
-                    // Используем цикл для Warm-up, чтобы проигнорировать возможный 'Connection reset' в самом начале
-                    echo "Starting Warm-up with retries..."
+                    echo "Starting Warm-up with retries to handle potential Connection Reset..."
                     sh """
                         for i in {1..3}; do
                           LOAD_TEST_RUN_NAME=warmup ./scripts/run-load-test.sh && break || sleep 5
@@ -132,19 +139,32 @@ EOF
         stage('Quality Gate & Rollback') {
             steps {
                 script {
-                    def props = readProperties file: "artifacts/load-tests/final.metrics"
+                    // Читаем файл метрик стандартным Groovy (замена readProperties)
+                    def propsFile = readFile("artifacts/load-tests/final.metrics")
+                    def props = [:]
+                    propsFile.eachLine { line ->
+                        def parts = line.split('=')
+                        if (parts.size() == 2) {
+                            props[parts[0].trim()] = parts[1].trim()
+                        }
+                    }
+
                     double rps = props['SUCCESS_RPS']?.toDouble() ?: 0
                     double rate = props['SUCCESS_RATE']?.toDouble() ?: 0
                     
-                    echo "Final Analysis: RPS \$rps, Success Rate \$rate%"
+                    echo "Metrics Analysis: Actual RPS: ${rps} (Target: ${env.TARGET_RPS}), Success Rate: ${rate}% (Min: ${env.SUCCESS_THRESHOLD}%)"
 
                     if (rate < env.SUCCESS_THRESHOLD.toDouble() || rps < env.TARGET_RPS.toDouble()) {
+                        echo "Quality Gate FAILED. Initiating Rollback..."
                         if (env.PREV_IMAGE) {
-                            echo "Quality Gate FAILED. Rolling back..."
                             sh "kubectl set image deployment/${env.APP_NAME} ${env.APP_NAME}=${env.PREV_IMAGE} -n ${env.NAMESPACE}"
                             sh "kubectl rollout status deployment/${env.APP_NAME} -n ${env.NAMESPACE}"
-                            error "Deployment rejected. Metrics too low."
+                            error "Deployment rejected. Rolled back to ${env.PREV_IMAGE}"
+                        } else {
+                            error "Deployment rejected, but no previous image found to rollback."
                         }
+                    } else {
+                        echo "Quality Gate PASSED. Deployment successful."
                     }
                 }
             }
@@ -153,7 +173,7 @@ EOF
 
     post {
         always {
-            archiveArtifacts artifacts: 'artifacts/load-tests/*, build/reports/**', allowEmptyArchive: true
+            archiveArtifacts artifacts: 'artifacts/load-tests/*', allowEmptyArchive: true
         }
     }
 }
