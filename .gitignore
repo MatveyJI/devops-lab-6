@@ -62,3 +62,4 @@ load_test_report_*.txt
 result.txt
 txt.txt
 z.txt
+jenkins_agent/

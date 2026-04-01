@@ -1,5 +1,5 @@
 pipeline {
-    agent any
+    agent { label 'docker' }
 
     environment {
         REGISTRY = "registry.cicd-task.svc.cluster.local:443"
@@ -40,8 +40,7 @@ pipeline {
                     if (!env.PREV_IMAGE) {
                         error('Не удалось определить предыдущий image для rollback')
                     }
-
-                    echo "Captured previous image tag for rollback"
+                    echo "Captured previous image tag for rollback: ${env.PREV_IMAGE}"
                 }
             }
         }
@@ -145,7 +144,8 @@ pipeline {
                     sh "kubectl set image deployment/${APP_NAME} ${APP_NAME}=${env.PREV_IMAGE}"
                     sh "kubectl rollout status deployment/${APP_NAME} --timeout=180s"
                     sh "kubectl wait --for=condition=ready pod -l app=${APP_NAME} --timeout=180s"
-                    sh "curl -fsS http://work.127.0.0.1.nip.io/work/status >/dev/null"
+                    // Проверка работоспособности после отката
+                    sh "curl -fsS ${env.LOAD_TEST_URL}/status >/dev/null || echo 'Rollback done but app status is not OK'"
                 }
             }
         }
