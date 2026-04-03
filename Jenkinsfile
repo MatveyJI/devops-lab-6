@@ -1,17 +1,21 @@
 pipeline {
-    agent { label 'docker' }
+    agent { label 'docker' } 
 
     environment {
         APP_NAME = "work-app"
         NAMESPACE = "cicd-task"
-        TARGET_RPS = "30" 
-        SUCCESS_THRESHOLD = "95"
+        
+        TARGET_RPS = "700"             
+        SUCCESS_THRESHOLD = "95"        
+        APP_API_TIMEOUT = "6000"        
+        
         LOAD_TEST_URL = "http://work.127.0.0.1.nip.io/work"
     }
 
     stages {
         stage('Setup & Clean') {
             steps {
+                // Подготовка прав доступа и очистка старых артефактов сборки
                 sh 'chmod +x gradlew scripts/*.sh'
                 sh './gradlew clean'
             }
@@ -19,6 +23,7 @@ pipeline {
 
         stage('Build Artifact') {
             steps {
+                // Сборка оптимизированного Quarkus JAR-файла без прогона Unit-тестов
                 sh './gradlew build -x test -Dquarkus.package.type=fast-jar'
             }
         }
@@ -26,6 +31,7 @@ pipeline {
         stage('Capture Previous Release') {
             steps {
                 script {
+                    // Сохраняем текущий образ из K8s, чтобы знать, куда откатываться в случае провала
                     def currentImage = sh(
                         returnStatus: true, 
                         script: "kubectl get deployment/${env.APP_NAME} -n ${env.NAMESPACE}"
@@ -41,8 +47,10 @@ pipeline {
         stage('Build & Load to KIND') {
             steps {
                 script {
+                    // Сборка Docker-образа с уникальным тегом на основе номера билда Jenkins
                     def imageTag = "${env.APP_NAME}:build-${env.BUILD_NUMBER}"
                     sh "docker build -t ${imageTag} ."
+                    // Загрузка образа в локальный кластер KIND
                     sh "kind load docker-image ${imageTag} --name kind"
                     env.FINAL_IMAGE = imageTag
                 }
@@ -52,9 +60,11 @@ pipeline {
         stage('Deploy & Configure K8s') {
             steps {
                 script {
+                    // Очистка старых Ingress ресурсов для предотвращения конфликтов
                     sh "kubectl delete ingress work-app-ingress -n default --ignore-not-found"
                     sh "kubectl delete ingress ${env.APP_NAME} -n ${env.NAMESPACE} --ignore-not-found"
 
+                    // Декларативное описание инфраструктуры (Infrastructure as Code)
                     sh """
 cat <<EOF | kubectl apply -n ${env.NAMESPACE} -f -
 apiVersion: v1
@@ -88,6 +98,7 @@ spec:
               number: 80
 EOF
                     """
+                    // Обновление образа в Deployment и ожидание завершения Rolling Update
                     sh "kubectl set image deployment/${env.APP_NAME} ${env.APP_NAME}=${env.FINAL_IMAGE} -n ${env.NAMESPACE}"
                     sh "kubectl rollout status deployment/${env.APP_NAME} -n ${env.NAMESPACE} --timeout=180s"
                 }
@@ -97,12 +108,13 @@ EOF
         stage('Wait & Settle') {
             steps {
                 script {
-                    echo "Waiting for stable 200 OK..."
+                    echo "Waiting for stable 200 OK from the service..."
+                    // Проверка доступности сервиса перед началом тестов
                     sh """
                         for i in {1..20}; do
                           CODE=\$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 2 ${env.LOAD_TEST_URL} || echo "000")
                           if [ "\$CODE" == "200" ]; then
-                            echo "Service is up. Waiting 15s for networking to settle..."
+                            echo "Service is UP. Waiting 15s for network convergence..."
                             sleep 15
                             exit 0
                           fi
@@ -117,22 +129,16 @@ EOF
         stage('Load Testing') {
             steps {
                 script {
-                    // Проверяем наличие Go, но не падаем, если его нет
-                    sh "go version || echo 'Go not found in system, scripts will use fallback'"
+                    sh "go version || echo 'Go not found'"
                     
+                    // СИНХРОНИЗАЦИЯ: Явно передаем параметры из Jenkins в переменные среды скрипта
+                    def testEnv = "LOAD_TEST_RPS=${env.TARGET_RPS} LOAD_TEST_TIMEOUT=${env.APP_API_TIMEOUT}ms"
+
                     echo "Starting Warm-up..."
-                    sh """
-                        for i in {1..3}; do
-                          LOAD_TEST_RUN_NAME=warmup ./scripts/run-load-test.sh && break || sleep 10
-                        done
-                    """
+                    sh "${testEnv} LOAD_TEST_RUN_NAME=warmup ./scripts/run-load-test.sh"
                     
                     echo "Starting Final Analysis..."
-                    sh """
-                        for i in {1..3}; do
-                          LOAD_TEST_RUN_NAME=final ./scripts/run-load-test.sh && break || sleep 10
-                        done
-                    """
+                    sh "${testEnv} LOAD_TEST_RUN_NAME=final ./scripts/run-load-test.sh"
                 }
             }
         }
@@ -140,6 +146,7 @@ EOF
         stage('Quality Gate & Rollback') {
             steps {
                 script {
+                    // Чтение и парсинг метрик, созданных скриптом нагрузочного тестирования
                     def propsFile = readFile("artifacts/load-tests/final.metrics")
                     def props = [:]
                     propsFile.eachLine { line ->
@@ -152,17 +159,20 @@ EOF
                     double rps = props['SUCCESS_RPS']?.toDouble() ?: 0
                     double rate = props['SUCCESS_RATE']?.toDouble() ?: 0
                     
-                    echo "Final Analysis: RPS ${rps} (Target: ${env.TARGET_RPS}), Success: ${rate}%"
+                    echo "Final Analysis Results: Success RPS: ${rps}, Success Rate: ${rate}%"
 
+                    // КРИТЕРИИ ПРОВЕРКИ: Процент успеха и соответствие целевому RPS
                     if (rate < env.SUCCESS_THRESHOLD.toDouble() || rps < env.TARGET_RPS.toDouble()) {
-                        echo "Quality Gate FAILED. Rolling back..."
+                        echo "QUALITY GATE FAILED. Initiating automatic rollback to ${env.PREV_IMAGE}..."
                         if (env.PREV_IMAGE) {
                             sh "kubectl set image deployment/${env.APP_NAME} ${env.APP_NAME}=${env.PREV_IMAGE} -n ${env.NAMESPACE}"
                             sh "kubectl rollout status deployment/${env.APP_NAME} -n ${env.NAMESPACE}"
-                            error "Deployment rejected: performance too low."
+                            error "Deployment rejected: performance did not meet the ${env.TARGET_RPS} RPS requirement."
+                        } else {
+                            error "Deployment rejected, but no previous image found for rollback."
                         }
                     } else {
-                        echo "Quality Gate PASSED."
+                        echo "QUALITY GATE PASSED. New release is stable."
                     }
                 }
             }
