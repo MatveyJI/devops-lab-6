@@ -1,8 +1,17 @@
+prometheus:
+  url: http://monitoring-stack-kube-prom-prometheus.monitoring.svc
+  port: 9090
+
 rules:
+  default: false
   custom:
-    - seriesQuery: 'work_active_requests'
+    - seriesQuery: '{__name__="work_active_requests",namespace!="",pod!=""}'
       resources:
-        template: "<<.Resource>>"
+        overrides:
+          namespace:
+            resource: "namespace"
+          pod:
+            resource: "pod"
       name:
         as: "work_active_requests_hpa"
-      metricsQuery: 'sum(work_active_requests) by (pod, namespace)'
+      metricsQuery: 'sum(<<.Series>>{<<.LabelMatchers>>}) by (<<.GroupBy>>)'

@@ -28,13 +28,13 @@ spec:
               value: "6000"
           readinessProbe:
             httpGet:
-              path: /work/status # ИСПРАВЛЕНО
+              path: /work/status 
               port: 8080
             initialDelaySeconds: 5
             periodSeconds: 5
           livenessProbe:
             httpGet:
-              path: /work/status # ИСПРАВЛЕНО
+              path: /work/status 
               port: 8080
             initialDelaySeconds: 10
             periodSeconds: 10

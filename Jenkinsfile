@@ -15,7 +15,7 @@ pipeline {
     stages {
         stage('Setup & Clean') {
             steps {
-                // Подготовка прав доступа и очистка старых артефактов сборки
+                // Подготовка 
                 sh 'chmod +x gradlew scripts/*.sh'
                 sh './gradlew clean'
             }
@@ -23,7 +23,7 @@ pipeline {
 
         stage('Build Artifact') {
             steps {
-                // Сборка оптимизированного Quarkus JAR-файла без прогона Unit-тестов
+                // JAR
                 sh './gradlew build -x test -Dquarkus.package.type=fast-jar'
             }
         }
@@ -31,7 +31,7 @@ pipeline {
         stage('Capture Previous Release') {
             steps {
                 script {
-                    // Сохраняем текущий образ из K8s, чтобы знать, куда откатываться в случае провала
+                    // Сохраняем текущий образ 
                     def currentImage = sh(
                         returnStatus: true, 
                         script: "kubectl get deployment/${env.APP_NAME} -n ${env.NAMESPACE}"
@@ -44,13 +44,13 @@ pipeline {
             }
         }
 
-        stage('Build & Load to KIND') {
+        stage('Build Load to KIND') {
             steps {
                 script {
-                    // Сборка Docker-образа с уникальным тегом на основе номера билда Jenkins
+                    // Сборка образа с уникальным тегом с номером билда 
                     def imageTag = "${env.APP_NAME}:build-${env.BUILD_NUMBER}"
                     sh "docker build -t ${imageTag} ."
-                    // Загрузка образа в локальный кластер KIND
+                    // загрузка образа в локальный кластер 
                     sh "kind load docker-image ${imageTag} --name kind"
                     env.FINAL_IMAGE = imageTag
                 }
@@ -60,11 +60,10 @@ pipeline {
         stage('Deploy & Configure K8s') {
             steps {
                 script {
-                    // Очистка старых Ingress ресурсов для предотвращения конфликтов
+                    //очистка олд ингрес ресурсов для предотвращения конфликта
                     sh "kubectl delete ingress work-app-ingress -n default --ignore-not-found"
                     sh "kubectl delete ingress ${env.APP_NAME} -n ${env.NAMESPACE} --ignore-not-found"
 
-                    // Декларативное описание инфраструктуры (Infrastructure as Code)
                     sh """
 cat <<EOF | kubectl apply -n ${env.NAMESPACE} -f -
 apiVersion: v1
@@ -98,7 +97,7 @@ spec:
               number: 80
 EOF
                     """
-                    // Обновление образа в Deployment и ожидание завершения Rolling Update
+                    // Обновление образа в деплое и ожидание завершения 
                     sh "kubectl set image deployment/${env.APP_NAME} ${env.APP_NAME}=${env.FINAL_IMAGE} -n ${env.NAMESPACE}"
                     sh "kubectl rollout status deployment/${env.APP_NAME} -n ${env.NAMESPACE} --timeout=180s"
                 }
@@ -109,7 +108,7 @@ EOF
             steps {
                 script {
                     echo "Waiting for stable 200 OK from the service..."
-                    // Проверка доступности сервиса перед началом тестов
+                    //проверка доступности сервиса перед началом тестов
                     sh """
                         for i in {1..20}; do
                           CODE=\$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 2 ${env.LOAD_TEST_URL} || echo "000")
@@ -131,7 +130,7 @@ EOF
                 script {
                     sh "go version || echo 'Go not found'"
                     
-                    // СИНХРОНИЗАЦИЯ: Явно передаем параметры из Jenkins в переменные среды скрипта
+                    //передаем параметры из дженкинса в переменные среды скрипта
                     def testEnv = "LOAD_TEST_RPS=${env.TARGET_RPS} LOAD_TEST_TIMEOUT=${env.APP_API_TIMEOUT}ms"
 
                     echo "Starting Warm-up..."
@@ -146,7 +145,7 @@ EOF
         stage('Quality Gate & Rollback') {
             steps {
                 script {
-                    // Чтение и парсинг метрик, созданных скриптом нагрузочного тестирования
+                    // Чтение метрик
                     def propsFile = readFile("artifacts/load-tests/final.metrics")
                     def props = [:]
                     propsFile.eachLine { line ->
@@ -161,7 +160,7 @@ EOF
                     
                     echo "Final Analysis Results: Success RPS: ${rps}, Success Rate: ${rate}%"
 
-                    // КРИТЕРИИ ПРОВЕРКИ: Процент успеха и соответствие целевому RPS
+                    //процент успеха и соответствие целевому RPS
                     if (rate < env.SUCCESS_THRESHOLD.toDouble() || rps < env.TARGET_RPS.toDouble()) {
                         echo "QUALITY GATE FAILED. Initiating automatic rollback to ${env.PREV_IMAGE}..."
                         if (env.PREV_IMAGE) {

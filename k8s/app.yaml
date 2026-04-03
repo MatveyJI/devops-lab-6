@@ -31,13 +31,13 @@ spec:
             httpGet:
               path: /work/status
               port: 8080
-            initialDelaySeconds: 15 # Увеличено для прогрева JVM
+            initialDelaySeconds: 15 # для прогрева JVM
             periodSeconds: 5
           livenessProbe:
             httpGet:
               path: /work/status
               port: 8080
-            initialDelaySeconds: 20 # Увеличено для прогрева JVM
+            initialDelaySeconds: 20 # для прогрева JVM
             periodSeconds: 10
 ---
 apiVersion: v1

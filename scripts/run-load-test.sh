@@ -61,8 +61,8 @@ if ! command -v ab >/dev/null 2>&1; then
   exit 1
 fi
 
-AB_REQUESTS="${AB_REQUESTS:-4000}"
-AB_CONCURRENCY="${AB_CONCURRENCY:-220}"
+AB_REQUESTS="${AB_REQUESTS:-6000}"
+AB_CONCURRENCY="${AB_CONCURRENCY:-700}"
 
 echo "go not found, falling back to ab"
 ab -k -n "${AB_REQUESTS}" -c "${AB_CONCURRENCY}" "${LOAD_TEST_URL}" | tee "${LOG_FILE}"

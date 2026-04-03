@@ -1,0 +1,166 @@
+pipeline {
+    agent { label 'docker' } // Говорим Jenkins запустить этот пайплайн на агенте с меткой 'docker' (твой компьютер)
+
+    environment { // Глобальные переменные, чтобы не хардкодить их в тексте
+        APP_NAME = "work-app"           // Имя нашего приложения
+        NAMESPACE = "cicd-task"         // Пространство имен в Kubernetes
+        TARGET_RPS = "30"               // Цель по запросам в секунду (для Quality Gate)
+        SUCCESS_THRESHOLD = "95"        // Минимально допустимый % успешных ответов
+        LOAD_TEST_URL = "http://work.127.0.0.1.nip.io/work" // Адрес для проверки и тестов
+    }
+
+    stages {
+        stage('Setup & Clean') { // Стадия подготовки
+            steps {
+                // Делаем все скрипты в папке исполняемыми (права +x)
+                sh 'chmod +x gradlew scripts/*.sh'
+                // Удаляем результаты старых билдов (папку build/), чтобы начать «с чистого листа»
+                sh './gradlew clean'
+            }
+        }
+
+        stage('Build Artifact') { // Стадия компиляции
+            steps {
+                // Собираем Java-приложение (Quarkus) в JAR-файл, пропуская Unit-тесты
+                sh './gradlew build -x test -Dquarkus.package.type=fast-jar'
+            }
+        }
+
+        stage('Capture Previous Release') { // Стадия «Пути к отступлению»
+            steps {
+                script {
+                    // Пытаемся узнать, какой образ сейчас запущен в кластере
+                    def currentImage = sh(
+                        returnStatus: true, 
+                        script: "kubectl get deployment/${env.APP_NAME} -n ${env.NAMESPACE}"
+                    ) == 0 ? sh(
+                        script: "kubectl get deployment/${env.APP_NAME} -n ${env.NAMESPACE} -o jsonpath='{.spec.template.spec.containers[0].image}'",
+                        returnStdout: true
+                    ).trim() : ""
+                    // Сохраняем имя старого образа в переменную PREV_IMAGE для возможного отката
+                    env.PREV_IMAGE = currentImage
+                }
+            }
+        }
+
+        stage('Build & Load to KIND') { // Стадия упаковки в Docker
+            steps {
+                script {
+                    // Формируем тег образа: work-app:build-76
+                    def imageTag = "${env.APP_NAME}:build-${env.BUILD_NUMBER}"
+                    // Собираем Docker-образ из Dockerfile в корне проекта
+                    sh "docker build -t ${imageTag} ."
+                    // Принудительно загружаем этот образ внутрь кластера KIND (локальный K8s)
+                    sh "kind load docker-image ${imageTag} --name kind"
+                    // Запоминаем этот тег как «финальный» для деплоя
+                    env.FINAL_IMAGE = imageTag
+                }
+            }
+        }
+
+        stage('Deploy & Configure K8s') { // Стадия деплоя
+            steps {
+                script {
+                    // Удаляем старые правила доступа (Ingress), если они остались от прошлых запусков
+                    sh "kubectl delete ingress work-app-ingress -n default --ignore-not-found"
+                    sh "kubectl delete ingress ${env.APP_NAME} -n ${env.NAMESPACE} --ignore-not-found"
+
+                    // Создаем Service и Ingress «на лету» через Heredoc (cat <<EOF)
+                    sh """
+cat <<EOF | kubectl apply -n ${env.NAMESPACE} -f -
+apiVersion: v1
+kind: Service
+... (настройки порта 80 -> 8080) ...
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+... (настройка домена work.127.0.0.1.nip.io) ...
+EOF
+                    """
+                    // Обновляем образ в Deployment на наш новый билд (#76)
+                    sh "kubectl set image deployment/${env.APP_NAME} ${env.APP_NAME}=${env.FINAL_IMAGE} -n ${env.NAMESPACE}"
+                    // Ждем, пока поды перезапустятся и станут доступны (максимум 3 минуты)
+                    sh "kubectl rollout status deployment/${env.APP_NAME} -n ${env.NAMESPACE} --timeout=180s"
+                }
+            }
+        }
+
+        stage('Wait & Settle') { // Стадия «Проверка связи»
+            steps {
+                script {
+                    echo "Waiting for stable 200 OK..."
+                    // Цикл: 20 раз пытаемся достучаться до сайта через curl
+                    sh """
+                        for i in {1..20}; do
+                          CODE=\$(curl -s -o /dev/null -w "%{http_code}" --connect-timeout 2 ${env.LOAD_TEST_URL} || echo "000")
+                          if [ "\$CODE" == "200" ]; then
+                            echo "Ура, сайт ожил! Ждем 15 сек для стабилизации сети..."
+                            sleep 15
+                            exit 0
+                          fi
+                          sleep 5
+                        done
+                        exit 1
+                    """
+                }
+            }
+        }
+
+        stage('Load Testing') { // Стадия нагрузочного теста
+            steps {
+                script {
+                    sh "go version || echo 'Go не найден'"
+                    
+                    // Запускаем прогрев (Warm-up), чтобы JVM оптимизировала код
+                    echo "Starting Warm-up..."
+                    sh "LOAD_TEST_RUN_NAME=warmup ./scripts/run-load-test.sh"
+                    
+                    // Запускаем основной тест (Final), данные которого пойдут в Quality Gate
+                    echo "Starting Final Analysis..."
+                    sh "LOAD_TEST_RUN_NAME=final ./scripts/run-load-test.sh"
+                }
+            }
+        }
+
+        stage('Quality Gate & Rollback') { // Стадия контроля качества
+            steps {
+                script {
+                    // Читаем файл с результатами теста, который создал скрипт Vegeta
+                    def propsFile = readFile("artifacts/load-tests/final.metrics")
+                    def props = [:]
+                    // Парсим файл (строки вида KEY=VALUE превращаем в словарь)
+                    propsFile.eachLine { line ->
+                        def parts = line.split('=')
+                        if (parts.size() == 2) props[parts[0].trim()] = parts[1].trim()
+                    }
+
+                    double rps = props['SUCCESS_RPS']?.toDouble() ?: 0
+                    double rate = props['SUCCESS_RATE']?.toDouble() ?: 0
+                    
+                    echo "Результат: Успешность ${rate}%, RPS ${rps}"
+
+                    // ПРОВЕРКА: Если успех < 95% или RPS < 30...
+                    if (rate < env.SUCCESS_THRESHOLD.toDouble() || rps < env.TARGET_RPS.toDouble()) {
+                        echo "ТЕСТ ПРОВАЛЕН! Начинаем откат..."
+                        if (env.PREV_IMAGE) {
+                            // Возвращаем старый образ, который сохранили в начале
+                            sh "kubectl set image deployment/${env.APP_NAME} ${env.APP_NAME}=${env.PREV_IMAGE} -n ${env.NAMESPACE}"
+                            sh "kubectl rollout status deployment/${env.APP_NAME} -n ${env.NAMESPACE}"
+                            // Прерываем пайплайн с ошибкой
+                            error "Deployment rejected: performance too low."
+                        }
+                    } else {
+                        echo "ТЕСТ ПРОЙДЕН! Оставляем новую версию."
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            // В любом случае (упал билд или нет) сохраняем отчеты в Jenkins
+            archiveArtifacts artifacts: 'artifacts/load-tests/*', allowEmptyArchive: true
+        }
+    }
+}
